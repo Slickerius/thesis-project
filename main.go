@@ -33,6 +33,7 @@ import (
 	"github.com/rivo/tview"
 
 	"mellium.im/communique/internal/client"
+	"mellium.im/communique/internal/gui"
 	"mellium.im/communique/internal/logwriter"
 	"mellium.im/communique/internal/storage"
 	"mellium.im/communique/internal/ui"
@@ -152,6 +153,9 @@ Try running '%s -config' to generate a default config file.`, err, os.Args[0])
 		logger.Fatalf("error opening database: %v", err)
 	}
 	defer db.Close()
+
+	window := gui.New()
+	window.Run()
 
 	// Setup the global tview styles. I hate this.
 	var cfgTheme *theme
