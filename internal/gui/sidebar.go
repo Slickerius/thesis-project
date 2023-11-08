@@ -4,6 +4,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
+	"fyne.io/fyne/v2/data/validation"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -40,5 +41,35 @@ func makeSideBar(conversationsList binding.StringList, conversationsMap map[stri
 
 	accountCard := widget.NewCard("kenshin@slickerius.com", "Online", nil)
 
-	return container.NewBorder(accountCard, nil, nil, nil, list)
+	button := widget.NewButton("Start New Chat", func() {
+		w := fyne.CurrentApp().NewWindow("Start New Chat")
+
+		emailEntry := widget.NewEntry()
+		emailEntry.SetPlaceHolder("alice@example.com")
+		emailEntry.Validator = validation.NewRegexp(`\w{1,}@\w{1,}\.\w{1,4}`, "not a valid JID")
+
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "JID", Widget: emailEntry, HintText: "Enter JID you want to chat with"},
+			},
+			OnCancel: func() {
+				w.Close()
+			},
+			OnSubmit: func() {
+				email := emailEntry.Text
+				conversation := newConversation(email, "")
+				conversationsList.Append(email)
+				conversationsMap[email] = conversation
+				w.Close()
+			},
+		}
+
+		w.SetContent(form)
+		w.Resize(fyne.NewSize(300, 100))
+		w.SetFixedSize(true)
+		w.CenterOnScreen()
+		w.Show()
+	})
+
+	return container.NewBorder(accountCard, container.NewPadded(button), nil, nil, list)
 }
