@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-func makeSideBar(conversationsList binding.StringList, conversationsMap map[string]*conversation) fyne.CanvasObject {
+func makeSideBar(conversationsList binding.StringList, conversationsMap map[string]*conversation, setChatBox func(*conversation)) fyne.CanvasObject {
 
 	list := widget.NewListWithData(
 		conversationsList,
@@ -38,6 +38,12 @@ func makeSideBar(conversationsList binding.StringList, conversationsMap map[stri
 			latestMessage.Bind(conversationsMap[emailVal].latestMessage)
 		},
 	)
+
+	list.OnSelected = func(id widget.ListItemID) {
+		email, _ := conversationsList.GetValue(id)
+		conversation := conversationsMap[email]
+		setChatBox(conversation)
+	}
 
 	accountCard := widget.NewCard("kenshin@slickerius.com", "Online", nil)
 

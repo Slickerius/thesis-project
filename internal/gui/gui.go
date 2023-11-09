@@ -5,6 +5,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
+	"fyne.io/fyne/v2/widget"
 )
 
 type GUI struct {
@@ -29,8 +30,13 @@ func New() *GUI {
 	conversationsList := binding.NewStringList()
 	conversationsMap := map[string]*conversation{}
 
-	sidebar := makeSideBar(conversationsList, conversationsMap)
-	chatbox := makeChatBox()
+	chatbox := container.NewMax(widget.NewLabel("Your conversations will appear here"))
+	setChatBox := func (c *conversation)  {
+		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c)}
+		chatbox.Refresh()
+	}
+	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox)
+
 	split := container.NewHSplit(sidebar, chatbox)
 	split.Offset = 0.2
 
