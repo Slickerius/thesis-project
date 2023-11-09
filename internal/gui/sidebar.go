@@ -45,6 +45,12 @@ func makeSideBar(conversationsList binding.StringList, conversationsMap map[stri
 		setChatBox(conversation)
 	}
 
+	list.OnUnselected = func(id widget.ListItemID) {
+		email, _ := conversationsList.GetValue(id)
+		conversation := conversationsMap[email]
+		conversation.messageList.RemoveListener(conversation.dataListener)
+	}
+
 	accountCard := widget.NewCard("kenshin@slickerius.com", "Online", nil)
 
 	button := widget.NewButton("Start New Chat", func() {

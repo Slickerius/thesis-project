@@ -12,6 +12,7 @@ type conversation struct {
 	resource      string
 	messageList   binding.UntypedList
 	latestMessage binding.String
+	dataListener  binding.DataListener
 }
 
 func newConversation(email string, resource string) *conversation {

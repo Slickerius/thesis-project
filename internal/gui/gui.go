@@ -30,8 +30,8 @@ func New() *GUI {
 	conversationsList := binding.NewStringList()
 	conversationsMap := map[string]*conversation{}
 
-	chatbox := container.NewMax(widget.NewLabel("Your conversations will appear here"))
-	setChatBox := func (c *conversation)  {
+	chatbox := container.NewStack(container.NewCenter(widget.NewLabel("Your conversations will appear here")))
+	setChatBox := func(c *conversation) {
 		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c)}
 		chatbox.Refresh()
 	}

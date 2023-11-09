@@ -8,26 +8,35 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+func generateChatsLabel(c *conversation) []fyne.CanvasObject {
+	chatsLabel := []fyne.CanvasObject{}
+	messages, _ := c.messageList.Get()
+	for _, messageItem := range messages {
+		messageObj := messageItem.(*message)
+		messageLabel := widget.NewLabel(messageObj.content)
+		messageLabel.Wrapping = fyne.TextWrapWord
+		if messageObj.sent {
+			messageLabel.Alignment = fyne.TextAlignTrailing
+		}
+		messageLabel.Refresh()
+		chatsLabel = append(chatsLabel, messageLabel)
+	}
+	return chatsLabel
+}
+
 func makeChatBox(c *conversation) fyne.CanvasObject {
-	chats := widget.NewListWithData(
-		c.messageList,
-		func() fyne.CanvasObject {
-			chat := widget.NewLabel("This is a sample chat message")
-			chat.Wrapping = fyne.TextWrapWord
-			chat.Refresh()
-			return chat
-		},
-		func(item binding.DataItem, obj fyne.CanvasObject) {
-			messageItem, _ := item.(binding.Untyped).Get()
-			message := messageItem.(*message)
-			chat := obj.(*widget.Label)
-			chat.SetText(message.content)
-			if message.sent {
-				chat.Alignment = fyne.TextAlignTrailing
-				chat.Refresh()
-			}
-		},
-	)
+	chatsLabel := generateChatsLabel(c)
+	chatsBase := container.NewVBox(chatsLabel...)
+	chats := container.NewVScroll(chatsBase)
+	chats.ScrollToBottom()
+
+	c.dataListener = binding.NewDataListener(func() {
+		chatsBase.Objects = generateChatsLabel(c)
+		chatsBase.Refresh()
+		chats.ScrollToBottom()
+	})
+
+	c.messageList.AddListener(c.dataListener)
 
 	toolbar := makeToolbar(c)
 	input := makeInput(c)
@@ -51,9 +60,11 @@ func makeInput(c *conversation) fyne.CanvasObject {
 		widget.NewToolbarAction(theme.MailSendIcon(), func() {
 			message := &message{
 				content: entry.Text,
-				sent: true,
+				sent:    true,
 			}
 			c.messageList.Append(message)
+			entry.SetText("")
+			c.latestMessage.Set(message.content)
 			// TODO: Implement sent to xmpp client
 		}),
 	)
