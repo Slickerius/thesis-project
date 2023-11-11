@@ -18,18 +18,24 @@ type GUI struct {
 	isRunning         bool
 	mainWindow        fyne.Window
 	debug             *log.Logger
-	accountName       binding.String
-	accountStatus     binding.String
+	accountCard       *widget.Card
 }
 
-func (gui *GUI) Run(jidChan chan string) {
+type LoginData struct {
+	JID  string
+	Pass string
+}
+
+func (gui *GUI) Run(jidChan chan *LoginData) {
 	// Account input GUI Setup
 	loginWindow := gui.app.NewWindow("Enter JID")
-	gui.debug.Println("Set loginwindow as master")
 
 	loginWindow.SetCloseIntercept(func() {
 		gui.debug.Println("Close window button triggered")
-		jidChan <- ""
+		jidChan <- &LoginData{
+			JID:  "",
+			Pass: "",
+		}
 		loginWindow.Close()
 	})
 
@@ -37,20 +43,30 @@ func (gui *GUI) Run(jidChan chan string) {
 	email.SetPlaceHolder("alice@example.com")
 	email.Validator = validation.NewRegexp(`\w{1,}@\w{1,}\.\w{1,4}`, "not a valid email")
 
+	password := widget.NewPasswordEntry()
+	password.SetPlaceHolder("Password")
+
 	form := &widget.Form{
 		Items: []*widget.FormItem{
-			{Text: "JID", Widget: email, HintText: "Enter JID you want to chat with"},
+			{Text: "JID", Widget: email},
+			{Text: "Password", Widget: password},
 		},
 		OnCancel: func() {
 			gui.debug.Println("Cancelled JID Entry")
-			jidChan <- ""
+			jidChan <- &LoginData{
+				JID:  "",
+				Pass: "",
+			}
 			loginWindow.Close()
 		},
 		OnSubmit: func() {
 			gui.debug.Println("Submitted JID entry")
-			jidChan <- email.Text
-			gui.accountName.Set(email.Text)
-			gui.accountStatus.Set("Offline")
+			jidChan <- &LoginData{
+				JID:  email.Text,
+				Pass: password.Text,
+			}
+			gui.accountCard.SetTitle(email.Text)
+			gui.accountCard.SetSubTitle("Offline")
 			gui.mainWindow.Show()
 			loginWindow.Close()
 		},
@@ -86,9 +102,8 @@ func New(debug *log.Logger) *GUI {
 		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c)}
 		chatbox.Refresh()
 	}
-	accountName := binding.NewString()
-	accountStatus := binding.NewString()
-	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox, accountName, accountStatus)
+	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox)
+	accountCard := sidebar.(*fyne.Container).Objects[1].(*widget.Card)
 
 	split := container.NewHSplit(sidebar, chatbox)
 	split.Offset = 0.2
@@ -103,53 +118,8 @@ func New(debug *log.Logger) *GUI {
 		isRunning:         false,
 		mainWindow:        mainWindow,
 		debug:             debug,
-		accountName:       accountName,
-		accountStatus:     accountStatus,
+		accountCard:       accountCard,
 	}
 
 	return gui
-}
-
-func (gui *GUI) ShowPasswordPrompt() string {
-	if !gui.isRunning {
-		return ""
-	}
-	w := gui.app.NewWindow("Input Password")
-
-	password := widget.NewPasswordEntry()
-	password.SetPlaceHolder("Password")
-
-	passChan := make(chan string)
-	isFinished := false
-
-	w.SetOnClosed(func() {
-		if !isFinished {
-			passChan <- ""
-			isFinished = true
-		}
-	})
-
-	form := &widget.Form{
-		Items: []*widget.FormItem{
-			{Text: "Password", Widget: password},
-		},
-		OnCancel: func() {
-			passChan <- ""
-			isFinished = true
-			w.Close()
-		},
-		OnSubmit: func() {
-			passChan <- password.Text
-			isFinished = true
-			w.Close()
-		},
-	}
-
-	w.SetContent(form)
-	w.Resize(fyne.NewSize(300, 100))
-	w.SetFixedSize(true)
-	w.CenterOnScreen()
-	w.Show()
-
-	return <-passChan
 }

@@ -182,22 +182,22 @@ Try running '%s -config' to generate a default config file.`, err, os.Args[0])
 
 		window := gui.New(debug)
 
-		getPass := func(ctx context.Context) (string, error) {
-			return window.ShowPasswordPrompt(), nil
-		}
-
-		jidChan := make(chan string)
+		jidChan := make(chan *gui.LoginData)
 
 		go func() {
-			emailinp := <-jidChan
-			debug.Printf("JID Account: %s", emailinp)
-			if emailinp == "" {
+			logininp := <-jidChan
+			debug.Printf("JID Account: %s", logininp.JID)
+			if logininp.JID == "" {
 				return
 			}
 
-			j, err := jid.Parse(emailinp)
+			j, err := jid.Parse(logininp.JID)
 			if err != nil {
 				logger.Printf("error parsing user address: %q", err)
+			}
+
+			getPass := func(ctx context.Context) (string, error) {
+				return logininp.Pass, nil
 			}
 
 			dialer := &dial.Dialer{

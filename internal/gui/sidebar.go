@@ -8,7 +8,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-func makeSideBar(conversationsList binding.StringList, conversationsMap map[string]*conversation, setChatBox func(*conversation), accountName binding.String, accountStatus binding.String) fyne.CanvasObject {
+func makeSideBar(conversationsList binding.StringList, conversationsMap map[string]*conversation, setChatBox func(*conversation)) fyne.CanvasObject {
 
 	list := widget.NewListWithData(
 		conversationsList,
@@ -51,15 +51,7 @@ func makeSideBar(conversationsList binding.StringList, conversationsMap map[stri
 		conversation.messageList.RemoveListener(conversation.dataListener)
 	}
 
-	accountCard := widget.NewCard("", "", nil)
-	accountName.AddListener(binding.NewDataListener(func() {
-		email, _ := accountName.Get()
-		accountCard.SetTitle(email)
-	}))
-	accountStatus.AddListener(binding.NewDataListener(func() {
-		status, _ := accountStatus.Get()
-		accountCard.SetSubTitle(status)
-	}))
+	accountCard := widget.NewCard("kenshin@slickerius.com", "Online", nil)
 
 	button := widget.NewButton("Start New Chat", func() {
 		w := fyne.CurrentApp().NewWindow("Start New Chat")
