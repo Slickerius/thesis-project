@@ -76,6 +76,7 @@ func main() {
 		help       bool
 		genConfig  bool
 		useQuic    bool
+		useGui     bool
 	)
 	flags := flag.NewFlagSet(appName, flag.ContinueOnError)
 	flags.StringVar(&configPath, "f", configPath, "the config file to load")
@@ -84,6 +85,7 @@ func main() {
 	flags.BoolVar(&help, "help", help, "print this help message")
 	flags.BoolVar(&genConfig, "config", genConfig, "print a default config file to stdout")
 	flags.BoolVar(&useQuic, "quic", useQuic, "Start session over quic (XEP-0467)")
+	flags.BoolVar(&useGui, "gui", useGui, "Start session with fyne GUI")
 	// Even with ContinueOnError set, it still prints for some reason. Discard the
 	// first defaults so we can write our own.
 	flags.SetOutput(ioutil.Discard)
@@ -154,8 +156,83 @@ Try running '%s -config' to generate a default config file.`, err, os.Args[0])
 	}
 	defer db.Close()
 
-	window := gui.New()
-	window.Run()
+	// GUI Code is here
+	if useGui {
+		debug.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+		xmlInLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+		xmlOutLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+
+		timeout := 30 * time.Second
+		if cfg.Timeout != "" {
+			timeout, err = time.ParseDuration(cfg.Timeout)
+			if err != nil {
+				logger.Printf("error parsing timeout, defaulting to 30s: %q", err)
+			}
+		}
+
+		var rosterVer string
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			rosterVer, err = db.RosterVer(ctx)
+			if err != nil {
+				logger.Printf("error retrieving roster version, falling back to full roster fetch: %v", err)
+			}
+		}()
+
+		window := gui.New(debug)
+
+		getPass := func(ctx context.Context) (string, error) {
+			return window.ShowPasswordPrompt(), nil
+		}
+
+		jidChan := make(chan string)
+
+		go func() {
+			emailinp := <-jidChan
+			debug.Printf("JID Account: %s", emailinp)
+			if emailinp == "" {
+				return
+			}
+
+			j, err := jid.Parse(emailinp)
+			if err != nil {
+				logger.Printf("error parsing user address: %q", err)
+			}
+
+			dialer := &dial.Dialer{
+				TLSConfig: &tls.Config{
+					ServerName: j.Domain().String(),
+					MinVersion: tls.VersionTLS12,
+				},
+				NoLookup: acct.NoSRV,
+				NoTLS:    acct.NoTLS,
+			}
+
+			c := client.New(
+				j, logger, debug,
+				client.Timeout(timeout),
+				client.Dialer(dialer),
+				client.NoTLS(acct.NoTLS),
+				client.Tee(logwriter.New(xmlInLog), logwriter.New(xmlOutLog)),
+				client.Password(getPass),
+				client.RosterVer(rosterVer),
+				client.Quic(useQuic),
+			)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*timeout)
+			defer cancel()
+			if err := c.Online(ctx); err != nil {
+				logger.Printf("initial login failed: %v", err)
+				return
+			}
+			debug.Printf("logged in as: %q", c.LocalAddr())
+		}()
+
+		window.Run(jidChan)
+
+		return
+	}
 
 	// Setup the global tview styles. I hate this.
 	var cfgTheme *theme
