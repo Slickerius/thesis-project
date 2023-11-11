@@ -18,6 +18,8 @@ type GUI struct {
 	isRunning         bool
 	mainWindow        fyne.Window
 	debug             *log.Logger
+	accountName       binding.String
+	accountStatus     binding.String
 }
 
 func (gui *GUI) Run(jidChan chan string) {
@@ -47,6 +49,8 @@ func (gui *GUI) Run(jidChan chan string) {
 		OnSubmit: func() {
 			gui.debug.Println("Submitted JID entry")
 			jidChan <- email.Text
+			gui.accountName.Set(email.Text)
+			gui.accountStatus.Set("Offline")
 			gui.mainWindow.Show()
 			loginWindow.Close()
 		},
@@ -82,7 +86,9 @@ func New(debug *log.Logger) *GUI {
 		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c)}
 		chatbox.Refresh()
 	}
-	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox)
+	accountName := binding.NewString()
+	accountStatus := binding.NewString()
+	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox, accountName, accountStatus)
 
 	split := container.NewHSplit(sidebar, chatbox)
 	split.Offset = 0.2
@@ -97,6 +103,8 @@ func New(debug *log.Logger) *GUI {
 		isRunning:         false,
 		mainWindow:        mainWindow,
 		debug:             debug,
+		accountName:       accountName,
+		accountStatus:     accountStatus,
 	}
 
 	return gui
