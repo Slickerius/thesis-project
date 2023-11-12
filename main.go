@@ -109,6 +109,97 @@ func main() {
 		return
 	}
 
+	// GUI Code is here
+	if useGui {
+		// TODO: Implement windows to display different type of debug output
+		// Currently displaying all in one main terminal
+		debug.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+		xmlInLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+		xmlOutLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
+
+		timeout := 30 * time.Second
+
+		window := gui.New(debug)
+
+		jidChan := make(chan *gui.LoginData)
+		var db *storage.DB
+
+		go func() {
+			logininp := <-jidChan
+
+			debug.Printf("JID Account: %s", logininp.JID)
+			if logininp.JID == "" {
+				return
+			}
+
+			// Open the database
+			dbCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			account, err := jid.Parse(logininp.JID)
+			if err != nil {
+				logger.Fatalf("error parsing main account as XMPP address: %v", err)
+			}
+			db, err = storage.OpenDB(dbCtx, appName, account.Bare().String(), "", schema, debug)
+			if err != nil {
+				logger.Fatalf("error opening database: %v", err)
+			}
+
+			// Get current roster version
+			var rosterVer string
+			func() {
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				defer cancel()
+				rosterVer, err = db.RosterVer(ctx)
+				if err != nil {
+					logger.Printf("error retrieving roster version, falling back to full roster fetch: %v", err)
+				}
+			}()
+
+			j, err := jid.Parse(logininp.JID)
+			if err != nil {
+				logger.Printf("error parsing user address: %q", err)
+			}
+
+			getPass := func(ctx context.Context) (string, error) {
+				return logininp.Pass, nil
+			}
+
+			dialer := &dial.Dialer{
+				TLSConfig: &tls.Config{
+					ServerName: j.Domain().String(),
+					MinVersion: tls.VersionTLS12,
+				},
+				NoLookup: false,
+				NoTLS:    false,
+			}
+
+			c := client.New(
+				j, logger, debug,
+				client.Timeout(timeout),
+				client.Dialer(dialer),
+				client.NoTLS(false),
+				client.Tee(logwriter.New(xmlInLog), logwriter.New(xmlOutLog)),
+				client.Password(getPass),
+				client.RosterVer(rosterVer),
+				client.Quic(useQuic),
+			)
+
+			c.Handler(newXMPPClientHandler(window, db, c, logger, debug))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*timeout)
+			defer cancel()
+			if err := c.Online(ctx); err != nil {
+				logger.Printf("initial login failed: %v", err)
+				return
+			}
+			debug.Printf("logged in as: %q", c.LocalAddr())
+		}()
+
+		window.Run(jidChan)
+		db.Close()
+		return
+	}
+
 	f, fpath, err := configFile(configPath)
 	if err != nil {
 		logger.Fatalf(`%v
@@ -155,84 +246,6 @@ Try running '%s -config' to generate a default config file.`, err, os.Args[0])
 		logger.Fatalf("error opening database: %v", err)
 	}
 	defer db.Close()
-
-	// GUI Code is here
-	if useGui {
-		debug.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
-		xmlInLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
-		xmlOutLog.SetOutput(io.MultiWriter(earlyLogs, os.Stderr))
-
-		timeout := 30 * time.Second
-		if cfg.Timeout != "" {
-			timeout, err = time.ParseDuration(cfg.Timeout)
-			if err != nil {
-				logger.Printf("error parsing timeout, defaulting to 30s: %q", err)
-			}
-		}
-
-		var rosterVer string
-		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			rosterVer, err = db.RosterVer(ctx)
-			if err != nil {
-				logger.Printf("error retrieving roster version, falling back to full roster fetch: %v", err)
-			}
-		}()
-
-		window := gui.New(debug)
-
-		jidChan := make(chan *gui.LoginData)
-
-		go func() {
-			logininp := <-jidChan
-			debug.Printf("JID Account: %s", logininp.JID)
-			if logininp.JID == "" {
-				return
-			}
-
-			j, err := jid.Parse(logininp.JID)
-			if err != nil {
-				logger.Printf("error parsing user address: %q", err)
-			}
-
-			getPass := func(ctx context.Context) (string, error) {
-				return logininp.Pass, nil
-			}
-
-			dialer := &dial.Dialer{
-				TLSConfig: &tls.Config{
-					ServerName: j.Domain().String(),
-					MinVersion: tls.VersionTLS12,
-				},
-				NoLookup: acct.NoSRV,
-				NoTLS:    acct.NoTLS,
-			}
-
-			c := client.New(
-				j, logger, debug,
-				client.Timeout(timeout),
-				client.Dialer(dialer),
-				client.NoTLS(acct.NoTLS),
-				client.Tee(logwriter.New(xmlInLog), logwriter.New(xmlOutLog)),
-				client.Password(getPass),
-				client.RosterVer(rosterVer),
-				client.Quic(useQuic),
-			)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 3*timeout)
-			defer cancel()
-			if err := c.Online(ctx); err != nil {
-				logger.Printf("initial login failed: %v", err)
-				return
-			}
-			debug.Printf("logged in as: %q", c.LocalAddr())
-		}()
-
-		window.Run(jidChan)
-
-		return
-	}
 
 	// Setup the global tview styles. I hate this.
 	var cfgTheme *theme

@@ -9,6 +9,8 @@ import (
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/data/validation"
 	"fyne.io/fyne/v2/widget"
+	"mellium.im/communique/internal/client/event"
+	"mellium.im/xmpp/jid"
 )
 
 type GUI struct {
@@ -19,6 +21,7 @@ type GUI struct {
 	mainWindow        fyne.Window
 	debug             *log.Logger
 	accountCard       *widget.Card
+	handler           func(interface{})
 }
 
 type LoginData struct {
@@ -85,6 +88,54 @@ func (gui *GUI) Run(jidChan chan *LoginData) {
 
 func (gui *GUI) Quit() {
 	gui.app.Quit()
+}
+
+func (gui *GUI) Away(j jid.JID) {
+	gui.accountCard.SetTitle(j.Bare().String())
+	gui.accountCard.SetSubTitle("Away")
+}
+
+func (gui *GUI) Busy(j jid.JID) {
+	gui.accountCard.SetTitle(j.Bare().String())
+	gui.accountCard.SetSubTitle("Busy")
+}
+
+func (gui *GUI) Online(j jid.JID) {
+	gui.accountCard.SetTitle(j.Bare().String())
+	gui.accountCard.SetSubTitle("Online")
+}
+
+func (gui *GUI) Offline(j jid.JID) {
+	gui.accountCard.SetTitle(j.Bare().String())
+	gui.accountCard.SetSubTitle("Offline")
+}
+
+func (gui *GUI) WriteMessage(msg event.ChatMessage) {
+	if msg.Body == "" {
+		return
+	}
+
+	chatAddr := msg.From
+	if msg.Sent {
+		chatAddr = msg.To
+	}
+	bareJid := chatAddr.Bare().String()
+
+	conversation, ok := gui.conversationsMap[bareJid]
+	if !ok {
+		gui.conversationsList.Append(bareJid)
+		gui.conversationsMap[bareJid] = newConversation(bareJid, chatAddr.Resourcepart())
+		conversation = gui.conversationsMap[bareJid]
+	}
+
+	// Replace resourcepart in case we are the one who initiate the chat
+	conversation.resource = chatAddr.Resourcepart()
+
+	conversation.messageList.Append(&message{
+		content: msg.Body,
+		sent:    msg.Sent,
+	})
+	conversation.latestMessage.Set(msg.Body)
 }
 
 func New(debug *log.Logger) *GUI {
