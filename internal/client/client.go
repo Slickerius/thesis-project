@@ -455,6 +455,7 @@ func (c *Client) SendMessage(ctx context.Context, msg event.ChatMessage) (event.
 		msg.ID = id
 		msg.OriginID.ID = id
 	}
+	msg.From = c.Session.LocalAddr()
 
 	return msg, c.Session.Send(ctx, receipts.Request(encodeMessage(msg)))
 }
