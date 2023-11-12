@@ -19,7 +19,30 @@ import (
 )
 
 func newFyneGUIHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, debug *log.Logger) func(interface{}) {
-	return func(ev interface{}) {}
+	return func(ev interface{}) {
+		switch e := ev.(type) {
+		case event.StatusOffline:
+			go func() {
+				if err := c.Offline(); err != nil {
+					logger.Printf("error going offline: %v", err)
+				}
+			}()
+		case event.ChatMessage:
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+
+				var err error
+				e, err = c.SendMessage(ctx, e)
+				if err != nil {
+					logger.Printf("error sending message: %v", err)
+				}
+				if err = db.InsertMsg(ctx, e.Account, e, c.LocalAddr()); err != nil {
+					logger.Printf("error writing message to database: %v", err)
+				}
+			}()
+		}
+	}
 }
 
 func newXMPPClientHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, debug *log.Logger) func(interface{}) {

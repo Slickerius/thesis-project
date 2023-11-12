@@ -185,6 +185,7 @@ func main() {
 			)
 
 			c.Handler(newXMPPClientHandler(window, db, c, logger, debug))
+			window.Handler(newFyneGUIHandler(window, db, c, logger, debug))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 3*timeout)
 			defer cancel()

@@ -81,6 +81,10 @@ func (gui *GUI) Run(jidChan chan *LoginData) {
 	loginWindow.CenterOnScreen()
 	loginWindow.Show()
 
+	gui.mainWindow.SetOnClosed(func() {
+		gui.handler(event.StatusOffline(jid.JID{}))
+	})
+
 	gui.isRunning = true
 	gui.app.Run()
 	gui.isRunning = false
@@ -88,6 +92,14 @@ func (gui *GUI) Run(jidChan chan *LoginData) {
 
 func (gui *GUI) Quit() {
 	gui.app.Quit()
+}
+
+func (gui *GUI) Handler(h func(interface{})) {
+	if h == nil {
+		gui.handler = func(i interface{}) {}
+		return
+	}
+	gui.handler = h
 }
 
 func (gui *GUI) Away(j jid.JID) {
@@ -149,8 +161,19 @@ func New(debug *log.Logger) *GUI {
 	conversationsMap := map[string]*conversation{}
 
 	chatbox := container.NewStack(container.NewCenter(widget.NewLabel("Your conversations will appear here")))
+
+	gui := &GUI{
+		app:               app,
+		conversationsList: conversationsList,
+		conversationsMap:  conversationsMap,
+		isRunning:         false,
+		mainWindow:        mainWindow,
+		debug:             debug,
+		handler:           func(i interface{}) {},
+	}
+
 	setChatBox := func(c *conversation) {
-		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c)}
+		chatbox.Objects = []fyne.CanvasObject{makeChatBox(c, gui)}
 		chatbox.Refresh()
 	}
 	sidebar := makeSideBar(conversationsList, conversationsMap, setChatBox)
@@ -162,15 +185,7 @@ func New(debug *log.Logger) *GUI {
 	mainWindow.SetContent(split)
 	mainWindow.Resize(fyne.NewSize(1280, 720))
 
-	gui := &GUI{
-		app:               app,
-		conversationsList: conversationsList,
-		conversationsMap:  conversationsMap,
-		isRunning:         false,
-		mainWindow:        mainWindow,
-		debug:             debug,
-		accountCard:       accountCard,
-	}
+	gui.accountCard = accountCard
 
 	return gui
 }

@@ -6,6 +6,9 @@ import (
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"mellium.im/communique/internal/client/event"
+	"mellium.im/xmpp/jid"
+	"mellium.im/xmpp/stanza"
 )
 
 func generateChatsLabel(c *conversation) []fyne.CanvasObject {
@@ -24,7 +27,7 @@ func generateChatsLabel(c *conversation) []fyne.CanvasObject {
 	return chatsLabel
 }
 
-func makeChatBox(c *conversation) fyne.CanvasObject {
+func makeChatBox(c *conversation, g *GUI) fyne.CanvasObject {
 	chatsLabel := generateChatsLabel(c)
 	chatsBase := container.NewVBox(chatsLabel...)
 	chats := container.NewVScroll(chatsBase)
@@ -39,7 +42,7 @@ func makeChatBox(c *conversation) fyne.CanvasObject {
 	c.messageList.AddListener(c.dataListener)
 
 	toolbar := makeToolbar(c)
-	input := makeInput(c)
+	input := makeInput(c, g)
 	return container.NewBorder(toolbar, input, nil, nil, chats)
 }
 
@@ -52,21 +55,39 @@ func makeToolbar(c *conversation) fyne.CanvasObject {
 	return container.NewBorder(nil, nil, nil, toolbar, addressCard)
 }
 
-func makeInput(c *conversation) fyne.CanvasObject {
+func makeInput(c *conversation, g *GUI) fyne.CanvasObject {
 	entry := widget.NewMultiLineEntry()
 	entry.SetPlaceHolder("Enter your message here")
 	entry.SetMinRowsVisible(2)
 	toolbar := widget.NewToolbar(
 		widget.NewToolbarAction(theme.MailSendIcon(), func() {
-			message := &message{
-				content: entry.Text,
-				sent:    true,
+			if entry.Text == "" {
+				return
 			}
-			c.messageList.Append(message)
+			sendMessage(c, g, entry.Text)
 			entry.SetText("")
-			c.latestMessage.Set(message.content)
-			// TODO: Implement sent to xmpp client
 		}),
 	)
 	return container.NewPadded(container.NewBorder(nil, nil, nil, toolbar, entry))
+}
+
+func sendMessage(c *conversation, g *GUI, messageContent string) {
+	message := &message{
+		content: messageContent,
+		sent:    true,
+	}
+	c.messageList.Append(message)
+	to := jid.MustParse(c.email)
+	if c.resource != "" {
+		to, _ = to.WithResource(c.resource)
+	}
+	g.handler(event.ChatMessage{
+		Message: stanza.Message{
+			To:   to,
+			Type: stanza.ChatMessage,
+		},
+		Body: messageContent,
+		Sent: true,
+	})
+	c.latestMessage.Set(messageContent)
 }
