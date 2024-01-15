@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/xml"
 	"log"
+	"strings"
 	"time"
 
 	/* #nosec */
@@ -11,11 +13,14 @@ import (
 
 	"mellium.im/communique/internal/client"
 	"mellium.im/communique/internal/client/event"
+	"mellium.im/communique/internal/client/jingle"
+	"mellium.im/communique/internal/client/omemo"
 	"mellium.im/communique/internal/gui"
 	"mellium.im/communique/internal/storage"
 	"mellium.im/xmpp/crypto"
 	"mellium.im/xmpp/disco"
 	"mellium.im/xmpp/jid"
+	"mellium.im/xmpp/stanza"
 )
 
 func newFyneGUIHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, debug *log.Logger) func(interface{}) {
@@ -29,11 +34,36 @@ func newFyneGUIHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, deb
 			}()
 		case event.ChatMessage:
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				var encryptedPayload *omemo.EncryptedMessage
+				var messageStanza stanza.Message
+
+				jdid := e.To.Bare().String() + ":" + c.DeviceId
+
+				if _, prs := c.MessageSession[jdid]; prs {
+					encryptedPayload, messageStanza = omemo.EncryptMessage(e.Body, false, nil, nil, nil, c, logger, e.To.Bare())
+				} else {
+					encryptedPayload, messageStanza = omemo.InitiateKeyAgreement(e.Body, c, logger, e.To.Bare())
+				}
+
+				rr := omemo.ReceiptRequest{}
+
+				var result strings.Builder
+				encoder := xml.NewEncoder(&result)
+
+				if err := encoder.Encode(encryptedPayload); err != nil {
+					panic(err)
+				}
+				if err := encoder.Encode(rr); err != nil {
+					panic(err)
+				}
+
+				xmlReader := xml.NewDecoder(strings.NewReader(result.String()))
+				messageReader := messageStanza.Wrap(xmlReader)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
-				var err error
-				e, err = c.SendMessage(ctx, e)
+				err := c.Session.Send(ctx, messageReader)
 				if err != nil {
 					logger.Printf("error sending message: %v", err)
 				}
@@ -41,6 +71,121 @@ func newFyneGUIHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, deb
 					logger.Printf("error writing message to database: %v", err)
 				}
 			}()
+		case event.NewOutgoingCall:
+			go func() {
+				jidCopy := jid.JID(e)
+				jingleRequest, err := c.CallClient.StartOutgoingCall(jidCopy)
+				if err != nil {
+					g.TerminateCallSession()
+					logger.Println(err)
+					return
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				err = c.UnmarshalIQ(ctx, jingle.IQ{
+					IQ: stanza.IQ{
+						Type: stanza.SetIQ,
+						To:   jidCopy,
+					},
+					Jingle: jingleRequest,
+				}.TokenReader(), nil)
+				if err != nil {
+					g.TerminateCallSession()
+					c.CallClient.CancelCall()
+					logger.Println(err)
+					return
+				}
+				g.ShowOutgoingCall(jidCopy)
+			}()
+		case event.AcceptIncomingCall:
+			go func() {
+				jingleResponse, err := c.CallClient.AcceptIncomingCall(e)
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err != nil {
+					c.UnmarshalIQ(ctx, jingle.IQ{
+						IQ: stanza.IQ{
+							Type: stanza.SetIQ,
+							To:   jid.MustParse(e.Initiator),
+						},
+						Jingle: jingle.JingleFailed(e.SID),
+					}.TokenReader(), nil)
+					return
+				}
+				err = c.UnmarshalIQ(ctx, jingle.IQ{
+					IQ: stanza.IQ{
+						Type: stanza.SetIQ,
+						To:   jid.MustParse(e.Initiator),
+					},
+					Jingle: jingleResponse,
+				}.TokenReader(), nil)
+				if err != nil {
+					g.TerminateCallSession()
+					c.CallClient.TerminateCall()
+					logger.Println(err)
+					return
+				}
+				g.ShowCallSession()
+			}()
+		case event.CancelCall:
+			go func() {
+				jingleTerminate, err := c.CallClient.CancelCall()
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err != nil {
+					_, _, sid := c.CallClient.GetCurrentState()
+					c.UnmarshalIQ(ctx, jingle.IQ{
+						IQ: stanza.IQ{
+							Type: stanza.SetIQ,
+							To:   c.CallClient.GetPartnerJid(),
+						},
+						Jingle: jingle.JingleFailed(sid),
+					}.TokenReader(), nil)
+					logger.Println(err)
+					return
+				}
+				err = c.UnmarshalIQ(ctx, jingle.IQ{
+					IQ: stanza.IQ{
+						Type: stanza.SetIQ,
+						To:   c.CallClient.GetPartnerJid(),
+					},
+					Jingle: jingleTerminate,
+				}.TokenReader(), nil)
+				if err != nil {
+					logger.Println(err)
+				}
+				g.TerminateCallSession()
+			}()
+		case event.TerminateCall:
+			go func() {
+				jingleTerminate, err := c.CallClient.TerminateCall()
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err != nil {
+					c.UnmarshalIQ(ctx, jingle.IQ{
+						IQ: stanza.IQ{
+							Type: stanza.SetIQ,
+							To:   c.CallClient.GetPartnerJid(),
+						},
+						Jingle: jingle.JingleFailed(jingleTerminate.SID),
+					}.TokenReader(), nil)
+					logger.Println(err)
+					return
+				}
+				err = c.UnmarshalIQ(ctx, jingle.IQ{
+					IQ: stanza.IQ{
+						Type: stanza.SetIQ,
+						To:   c.CallClient.GetPartnerJid(),
+					},
+					Jingle: jingleTerminate,
+				}.TokenReader(), nil)
+				if err != nil {
+					logger.Println(err)
+				}
+				g.TerminateCallSession()
+			}()
+		default:
+			debug.Printf("unrecognized gui event: %T(%[1]q)", e)
 		}
 	}
 }
@@ -158,6 +303,30 @@ func newXMPPClientHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, 
 				}
 				result.Info = discoInfo
 				e.Info <- result
+			}()
+		case event.OutgoingCallAccepted:
+			go func() {
+				err := c.CallClient.AcceptOutgoingCall(e)
+				if err != nil {
+					c.CallClient.CancelCall()
+					logger.Println(err)
+					return
+				}
+				g.ShowCallSession()
+			}()
+		case event.NewIncomingCall:
+			go func() {
+				g.ShowIncomingCall(e)
+			}()
+		case event.CancelCall:
+			go func() {
+				c.CallClient.CancelCall()
+				g.TerminateCallSession()
+			}()
+		case event.TerminateCall:
+			go func() {
+				c.CallClient.TerminateCall()
+				g.TerminateCallSession()
 			}()
 		default:
 			debug.Printf("unrecognized client event: %T(%[1]q)", e)
