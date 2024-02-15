@@ -6,25 +6,30 @@ package client
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"mellium.im/communique/internal/client/doubleratchet"
 	"mellium.im/communique/internal/client/event"
 	"mellium.im/communique/internal/client/jingle"
+	omemoreceiver "mellium.im/communique/internal/client/omemo/receiver"
 	"mellium.im/communique/internal/client/quic"
+	"mellium.im/communique/internal/client/x3dh"
 	legacybookmarks "mellium.im/legacy/bookmarks"
 	"mellium.im/sasl"
 	"mellium.im/xmlstream"
 	"mellium.im/xmpp"
 	"mellium.im/xmpp/bookmarks"
-	"mellium.im/xmpp/carbons"
 	"mellium.im/xmpp/dial"
 	"mellium.im/xmpp/disco"
 	"mellium.im/xmpp/jid"
@@ -41,6 +46,25 @@ func noopHandler(interface{}) {}
 // send an initial presence, etc.
 func New(j jid.JID, logger, debug *log.Logger, opts ...Option) *Client {
 	var c *Client
+
+	idPubKey, idPrivKey, err := ed25519.GenerateKey(nil)
+
+	if err != nil {
+		logger.Printf("Error generating identity key pair: %q", err)
+	}
+
+	spkPub, spkPriv, spkSig, err := x3dh.CreateNewSpk(idPrivKey)
+
+	if err != nil {
+		logger.Printf("Error generating signed prekey pair: %q", err)
+	}
+
+	tmpDhPubKey, tmpDhPrivKey, err := doubleratchet.DhKeyPair()
+
+	if err != nil {
+		logger.Printf("Error generating Diffie-Hellman key pair: %q", err)
+	}
+
 	c = &Client{
 		timeout: 30 * time.Second,
 		addr:    j,
@@ -58,8 +82,32 @@ func New(j jid.JID, logger, debug *log.Logger, opts ...Option) *Client {
 			Unhandled: func(id string) { c.handler(event.Receipt(id)) },
 		},
 		// TODO: mediated muc invitations
-		mucClient: &muc.Client{},
-		channels:  make(map[string]*muc.Channel),
+		mucClient:      &muc.Client{},
+		channels:       make(map[string]*muc.Channel),
+		DeviceId:       "123",
+		IdPrivKey:      []byte(idPrivKey),
+		IdPubKey:       []byte(idPubKey),
+		SpkPriv:        spkPriv,
+		SpkPub:         spkPub,
+		SpkSig:         spkSig,
+		OpkList:        []omemoreceiver.PreKey{}, // different prekey type from the one in omemo package
+		TmpDhPrivKey:   tmpDhPrivKey,
+		TmpDhPubKey:    tmpDhPubKey,
+		MessageSession: make(map[string]*doubleratchet.DoubleRatchet),
+	}
+
+	for i := 0; i <= 10; i++ {
+		opkPub, opkPriv, err := ed25519.GenerateKey(nil)
+
+		if err != nil {
+			logger.Printf("Error generating one-time prekey pair: %q", err)
+		}
+
+		c.OpkList = append(c.OpkList, omemoreceiver.PreKey{
+			ID:         strconv.Itoa(i),
+			PrivateKey: []byte(opkPriv),
+			PublicKey:  []byte(opkPub),
+		})
 	}
 
 	for _, opt := range opts {
@@ -209,14 +257,14 @@ func (c *Client) reconnect(ctx context.Context) error {
 	}
 
 	// Enable message carbons.
-	c.debug.Println("Enabling message carbons")
-	carbonsCtx, carbonsCancel := context.WithTimeout(context.Background(), c.timeout)
-	defer carbonsCancel()
-	err = carbons.Enable(carbonsCtx, c.Session)
-	if err != nil {
-		c.debug.Printf("error enabling carbons: %q", err)
-		return err
-	}
+	// c.debug.Println("Enabling message carbons")
+	// carbonsCtx, carbonsCancel := context.WithTimeout(context.Background(), c.timeout)
+	// defer carbonsCancel()
+	// err = carbons.Enable(carbonsCtx, c.Session)
+	// if err != nil {
+	// 	c.debug.Printf("error enabling carbons: %q", err)
+	// 	return err
+	// }
 
 	// Fetch the roster
 	c.debug.Println("Fetching roster")
@@ -228,13 +276,13 @@ func (c *Client) reconnect(ctx context.Context) error {
 	}
 
 	// Fetch the bookmarks
-	c.debug.Println("Fetching bookmarks")
-	bookmarksCtx, bookmarksCancel := context.WithTimeout(context.Background(), c.timeout)
-	defer bookmarksCancel()
-	err = c.Bookmarks(bookmarksCtx)
-	if err != nil {
-		c.logger.Printf("error fetching bookmarks: %q", err)
-	}
+	// c.debug.Println("Fetching bookmarks")
+	// bookmarksCtx, bookmarksCancel := context.WithTimeout(context.Background(), c.timeout)
+	// defer bookmarksCancel()
+	// err = c.Bookmarks(bookmarksCtx)
+	// if err != nil {
+	// 	c.logger.Printf("error fetching bookmarks: %q", err)
+	// }
 
 	// Init CallClient
 	c.CallClient = jingle.New(c.LocalAddr(), newOnIceCandidateHandler(c), c.debug)
@@ -263,6 +311,16 @@ type Client struct {
 	channels        map[string]*muc.Channel
 	useQuic         bool
 	quicConn        *quic.QuicConn
+	DeviceId        string
+	IdPrivKey       []byte
+	IdPubKey        []byte
+	SpkPriv         []byte
+	SpkPub          []byte
+	SpkSig          []byte
+	OpkList         []omemoreceiver.PreKey
+	TmpDhPrivKey    []byte
+	TmpDhPubKey     []byte
+	MessageSession  map[string]*doubleratchet.DoubleRatchet
 	CallClient      *jingle.CallClient
 }
 
@@ -530,4 +588,44 @@ func (c *Client) LeaveMUC(ctx context.Context, room jid.JID, reason string) erro
 	}
 	delete(c.channels, s)
 	return nil
+}
+
+func (c *Client) RenewKeys(usedOpkId string) {
+	tmpDhPubKey, tmpDhPrivKey, err := doubleratchet.DhKeyPair()
+
+	if err != nil {
+		c.logger.Printf("Error generating Diffie-Hellman key pair: %q", err)
+	}
+
+	c.TmpDhPrivKey = tmpDhPrivKey
+	c.TmpDhPubKey = tmpDhPubKey
+
+	var opkIdx int
+	var maxId = -1
+
+	for i, opk := range c.OpkList {
+		if opk.ID == usedOpkId {
+			opkIdx = i
+		}
+
+		idNum, _ := strconv.Atoi(opk.ID)
+
+		if idNum > maxId {
+			maxId = idNum
+		}
+	}
+
+	slices.Delete(c.OpkList, opkIdx, opkIdx+1)
+
+	opkPub, opkPriv, err := ed25519.GenerateKey(nil)
+
+	if err != nil {
+		c.logger.Printf("Error generating new one-time prekey pair: %q", err)
+	}
+
+	c.OpkList = append(c.OpkList, omemoreceiver.PreKey{
+		ID:         strconv.Itoa(maxId + 1),
+		PrivateKey: []byte(opkPriv),
+		PublicKey:  []byte(opkPub),
+	})
 }

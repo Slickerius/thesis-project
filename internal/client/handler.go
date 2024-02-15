@@ -8,11 +8,15 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/pion/webrtc/v3"
 	"mellium.im/communique/internal/client/event"
+
+	//"mellium.im/communique/internal/client/omemo"
 	"mellium.im/communique/internal/client/jingle"
+	omemoreceiver "mellium.im/communique/internal/client/omemo/receiver"
 	"mellium.im/xmlstream"
 	"mellium.im/xmpp"
 	"mellium.im/xmpp/carbons"
@@ -28,6 +32,7 @@ import (
 
 func newXMPPHandler(c *Client) xmpp.Handler {
 	msgHandler := newMessageHandler(c)
+	omemoHandler := newOMEMOMessageHandler(c)
 	return mux.New(
 		c.In().XMLNS,
 		disco.Handle(),
@@ -61,6 +66,7 @@ func newXMPPHandler(c *Client) xmpp.Handler {
 		mux.Presence("", xml.Name{}, newPresenceHandler(c)),
 		mux.Message(stanza.NormalMessage, xml.Name{Local: "body"}, msgHandler),
 		mux.Message(stanza.ChatMessage, xml.Name{Local: "body"}, msgHandler),
+		mux.Message(stanza.ChatMessage, xml.Name{Local: "encrypted"}, omemoHandler),
 		mux.Message(stanza.GroupChatMessage, xml.Name{Local: "body"}, msgHandler),
 		receipts.Handle(c.receiptsHandler),
 		history.Handle(history.NewHandler(newHistoryHandler(c))),
@@ -137,6 +143,87 @@ func newMessageHandler(c *Client) mux.MessageHandlerFunc {
 			msg.Account = true
 		}
 		c.handler(msg)
+		return nil
+	}
+}
+
+func newOMEMOMessageHandler(c *Client) mux.MessageHandlerFunc {
+	return func(sm stanza.Message, r xmlstream.TokenReadEncoder) error {
+		var currentEl, currentJid, currentRid string
+		var fromJid jid.JID
+		var keyElement, payload string
+		keyExchange := false
+
+		for t, _ := r.Token(); t != nil; t, _ = r.Token() {
+			switch se := t.(type) {
+			case xml.StartElement:
+				currentEl = se.Name.Local
+
+				switch se.Name.Local {
+				case "message":
+					for _, attr := range se.Attr {
+						switch attr.Name.Local {
+						case "from":
+							fromJid = jid.MustParse(attr.Value)
+						}
+					}
+				case "keys":
+					currentJid = se.Attr[0].Value
+				case "key":
+					for _, attr := range se.Attr {
+						switch attr.Name.Local {
+						case "kex":
+							keyExchange, _ = strconv.ParseBool(attr.Value)
+						case "rid":
+							currentRid = attr.Value
+						}
+					}
+				}
+			case xml.CharData:
+				content := string(se[:])
+				switch currentEl {
+				case "key":
+					if currentJid == c.addr.Bare().String() && currentRid == c.DeviceId {
+						keyElement = content
+					}
+				case "payload":
+					payload = content
+				}
+			}
+		}
+
+		var msgBody, opkId string
+		var err error
+
+		if keyExchange {
+			msgBody, opkId = omemoreceiver.ReceiveKeyAgreement(keyElement, payload, fromJid.Bare().String(), c.DeviceId, c.IdPrivKey, c.SpkPriv, c.TmpDhPrivKey, c.TmpDhPubKey, c.OpkList, c.MessageSession, c.logger)
+			c.RenewKeys(opkId)
+		} else {
+			msgBody, err = omemoreceiver.ReceiveEncryptedMessage(payload, fromJid.Bare().String(), c.DeviceId, c.MessageSession, c.logger)
+			if err != nil {
+				return nil
+			}
+		}
+
+		msg := event.ChatMessage{}
+		msg.Message = sm
+		msg.Body = msgBody
+
+		c.handler(msg)
+
+		if keyExchange {
+			tokenReader := omemoreceiver.PublishKeyBundle(c.DeviceId, c.LocalAddr().Bare().String(), c.IdPubKey, c.SpkPub, c.SpkSig, c.TmpDhPubKey, c.OpkList, c.logger)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 0*time.Second)
+			defer cancel()
+
+			err := c.UnmarshalIQ(ctx, tokenReader, nil)
+
+			if err != nil {
+				c.logger.Printf("Error sending key bundle: %q", err)
+			}
+		}
+
 		return nil
 	}
 }

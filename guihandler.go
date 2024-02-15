@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/xml"
 	"log"
+	"strings"
 	"time"
 
 	/* #nosec */
@@ -12,6 +14,7 @@ import (
 	"mellium.im/communique/internal/client"
 	"mellium.im/communique/internal/client/event"
 	"mellium.im/communique/internal/client/jingle"
+	"mellium.im/communique/internal/client/omemo"
 	"mellium.im/communique/internal/gui"
 	"mellium.im/communique/internal/storage"
 	"mellium.im/xmpp/crypto"
@@ -31,11 +34,36 @@ func newFyneGUIHandler(g *gui.GUI, db *storage.DB, c *client.Client, logger, deb
 			}()
 		case event.ChatMessage:
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				var encryptedPayload *omemo.EncryptedMessage
+				var messageStanza stanza.Message
+
+				jdid := e.To.Bare().String() + ":" + c.DeviceId
+
+				if _, prs := c.MessageSession[jdid]; prs {
+					encryptedPayload, messageStanza = omemo.EncryptMessage(e.Body, false, nil, nil, nil, c, logger, e.To.Bare())
+				} else {
+					encryptedPayload, messageStanza = omemo.InitiateKeyAgreement(e.Body, c, logger, e.To.Bare())
+				}
+
+				rr := omemo.ReceiptRequest{}
+
+				var result strings.Builder
+				encoder := xml.NewEncoder(&result)
+
+				if err := encoder.Encode(encryptedPayload); err != nil {
+					panic(err)
+				}
+				if err := encoder.Encode(rr); err != nil {
+					panic(err)
+				}
+
+				xmlReader := xml.NewDecoder(strings.NewReader(result.String()))
+				messageReader := messageStanza.Wrap(xmlReader)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
-				var err error
-				e, err = c.SendMessage(ctx, e)
+				err := c.Session.Send(ctx, messageReader)
 				if err != nil {
 					logger.Printf("error sending message: %v", err)
 				}
